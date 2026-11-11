@@ -1,15 +1,26 @@
-# Secrets and local environment files
+# Never copy runtime secrets into the container image.
 .env
 .env.*
-!.env.example
-**/.env
-**/.env.*
-!**/.env.example
+*.pem
+*.key
 
-# Dependencies and generated files
-node_modules/
+# Local Python environments, caches and test output.
 .venv/
+venv/
 __pycache__/
 *.py[cod]
-dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+
+# Local tooling and operating-system clutter.
+.git/
+.gitignore
 .DS_Store
+__MACOSX/
+.idea/
+.vscode/
+
+# Node dependency folders should never be copied into Python builds.
+node_modules/
