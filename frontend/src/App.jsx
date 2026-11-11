@@ -1,102 +1,107 @@
-import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, Outlet, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import api from './lib/api'
 
-import Login    from './pages/Login'
+import Login from './pages/Login'
 import Register from './pages/Register'
-import Setup    from './pages/Setup'
-import Swipe    from './pages/Swipe'
-import Matches  from './pages/Matches'
-import Game     from './pages/Game'
-import Profile  from './pages/Profile'
-import Navbar   from './components/Navbar'
+import Setup from './pages/Setup'
+import Subscription from './pages/Subscription'
+import Swipe from './pages/Swipe'
+import Matches from './pages/Matches'
+import Game from './pages/Game'
+import Profile from './pages/Profile'
+import Navbar from './components/Navbar'
 
-// ---------------------------------------------------------------------------
-// Protected route — redirects to /login if not authenticated
-// ---------------------------------------------------------------------------
+function LoadingScreen() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-surface-400">
+      <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-primary" />
+    </div>
+  )
+}
+
 function ProtectedRoute() {
   const { user, loading } = useAuth()
-
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-surface-400">
-        <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-primary" />
-      </div>
-    )
-  }
-
+  if (loading) return <LoadingScreen />
   return user ? <Outlet /> : <Navigate to="/login" replace />
 }
 
-// ---------------------------------------------------------------------------
-// Profile gate — redirects newly signed-up users to /setup if no profile yet
-// ---------------------------------------------------------------------------
+// Existing accounts are also checked. A failed status lookup never grants access.
 function ProfileGate() {
   const { user } = useAuth()
-  const [hasProfile, setHasProfile] = useState(null) // null = still checking
+  const navigate = useNavigate()
+  const [gate, setGate] = useState('checking')
+  const [error, setError] = useState('')
 
   useEffect(() => {
-    if (!user) return
-    api.get('/profiles/me')
-      .then(() => setHasProfile(true))
-      .catch((err) => {
-        // 404 means no profile yet
-        if (err.message?.includes('not found') || err.message?.includes('404')) {
-          setHasProfile(false)
-        } else {
-          // Network or other error — allow through to avoid blocking
-          setHasProfile(true)
+    let alive = true
+    async function check() {
+      setGate('checking')
+      setError('')
+      try {
+        await api.get('/profiles/me')
+      } catch (err) {
+        if (err.message?.toLowerCase().includes('profile not found') || err.message?.includes('404')) {
+          if (alive) setGate('setup')
+          return
         }
-      })
+        if (alive) { setError(err.message); setGate('error') }
+        return
+      }
+
+      try {
+        const { data } = await api.get('/payments/status')
+        if (!alive) return
+        if (data.active) setGate('ready')
+        else setGate('subscription')
+      } catch (err) {
+        if (alive) { setError(err.message); setGate('error') }
+      }
+    }
+    if (user) check()
+    return () => { alive = false }
   }, [user])
 
-  if (hasProfile === null) {
+  if (gate === 'checking') return <LoadingScreen />
+  if (gate === 'setup') return <Navigate to="/setup" replace />
+  if (gate === 'subscription') return <Navigate to="/subscription" replace />
+  if (gate === 'error') {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-surface-400">
-        <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-primary" />
+      <div className="min-h-screen flex flex-col items-center justify-center bg-surface-400 px-6 text-center">
+        <h2 className="text-xl font-bold text-white">We couldn't verify your access</h2>
+        <p className="text-white/60 text-sm mt-2">{error || 'Please check your connection and try again.'}</p>
+        <button className="btn-primary mt-5" onClick={() => navigate(0)}>Try again</button>
       </div>
     )
-  }
-
-  if (!hasProfile) {
-    return <Navigate to="/setup" replace />
   }
 
   return (
     <div className="min-h-screen flex flex-col bg-surface-400">
-      <div className="flex-1 overflow-y-auto pb-20">
-        <Outlet />
-      </div>
+      <div className="flex-1 overflow-y-auto pb-20"><Outlet /></div>
       <Navbar />
     </div>
   )
 }
 
-// ---------------------------------------------------------------------------
-// App shell
-// ---------------------------------------------------------------------------
 function AppRoutes() {
   return (
     <Routes>
-      {/* Public routes */}
-      <Route path="/login"    element={<Login />} />
+      <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
 
-      {/* Must be authenticated */}
       <Route element={<ProtectedRoute />}>
         <Route path="/setup" element={<Setup />} />
+        <Route path="/subscription" element={<Subscription />} />
 
-        {/* Must have a completed profile */}
         <Route element={<ProfileGate />}>
-          <Route path="/"        element={<Swipe />} />
+          <Route path="/" element={<Swipe />} />
           <Route path="/matches" element={<Matches />} />
           <Route path="/profile" element={<Profile />} />
           <Route path="/game/:gameId" element={<Game />} />
         </Route>
       </Route>
 
-      {/* Fallback */}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
@@ -105,9 +110,7 @@ function AppRoutes() {
 export default function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <AppRoutes />
-      </BrowserRouter>
+      <BrowserRouter><AppRoutes /></BrowserRouter>
     </AuthProvider>
   )
 }

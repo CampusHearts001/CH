@@ -1,13 +1,20 @@
 """
 CampusMatch - Profiles router: own profile + the discovery feed.
 """
+
 import random
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from supabase import Client
 
 import config
-from auth import AuthUser, email_allowed, get_current_user, get_current_user_id
+from auth import (
+    AuthUser,
+    email_allowed,
+    get_current_user,
+    get_current_user_id,
+    get_active_user_id,
+)
 from database import get_db
 from models import (
     PUBLIC_FIELDS,
@@ -21,7 +28,9 @@ router = APIRouter(prefix="/profiles", tags=["profiles"])
 
 
 @router.get("/me", response_model=ProfileResponse)
-def get_my_profile(user_id: str = Depends(get_current_user_id), db: Client = Depends(get_db)):
+def get_my_profile(
+    user_id: str = Depends(get_current_user_id), db: Client = Depends(get_db)
+):
     result = db.table("profiles").select("*").eq("id", user_id).execute()
     if not result.data:
         raise HTTPException(
@@ -53,9 +62,13 @@ def create_my_profile(
     if existing.data:
         raise HTTPException(status.HTTP_409_CONFLICT, "Profile already exists.")
 
-    result = db.table("profiles").insert({"id": user.id, **payload.model_dump()}).execute()
+    result = (
+        db.table("profiles").insert({"id": user.id, **payload.model_dump()}).execute()
+    )
     if not result.data:
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Failed to create profile.")
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, "Failed to create profile."
+        )
     return result.data[0]
 
 
@@ -76,7 +89,9 @@ def update_my_profile(
 
 
 @router.get("/discover", response_model=PublicProfile)
-def discover_profile(user_id: str = Depends(get_current_user_id), db: Client = Depends(get_db)):
+def discover_profile(
+    user_id: str = Depends(get_active_user_id), db: Client = Depends(get_db)
+):
     """
     Return ONE random profile for the current user to swipe on.
 
@@ -93,12 +108,23 @@ def discover_profile(user_id: str = Depends(get_current_user_id), db: Client = D
         .execute()
     )
     if not me_res.data:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Complete your profile setup before discovering others.")
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "Complete your profile setup before discovering others.",
+        )
     me = me_res.data[0]
 
     swiped = {
         row["swiped_id"]
-        for row in (db.table("swipes").select("swiped_id").eq("swiper_id", user_id).limit(5000).execute().data or [])
+        for row in (
+            db.table("swipes")
+            .select("swiped_id")
+            .eq("swiper_id", user_id)
+            .limit(5000)
+            .execute()
+            .data
+            or []
+        )
     }
 
     query = (
@@ -115,11 +141,15 @@ def discover_profile(user_id: str = Depends(get_current_user_id), db: Client = D
     candidates = [
         r
         for r in rows
-        if r["id"] not in swiped and r.get("interested_in") in ("everyone", me["gender"])
+        if r["id"] not in swiped
+        and r.get("interested_in") in ("everyone", me["gender"])
     ]
 
     if not candidates:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No more profiles to show right now. Check back later!")
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "No more profiles to show right now. Check back later!",
+        )
 
     pick = random.choice(candidates)
     pick.pop("interested_in", None)

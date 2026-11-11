@@ -131,7 +131,7 @@ export default function Setup() {
         contact_info: form.contact_info.trim() || null,
       })
 
-      navigate('/')
+      navigate('/subscription')
     } catch (err) {
       setError(err.message || 'Failed to save profile. Please try again.')
     } finally {

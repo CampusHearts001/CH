@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from supabase import Client
 
 import config
-from auth import get_current_user_id
+from auth import get_active_user_id
 from database import get_db
 from models import ReportCreate, ReportResponse
 
@@ -15,7 +15,7 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 @router.post("", response_model=ReportResponse, status_code=status.HTTP_201_CREATED)
 def report_user(
     payload: ReportCreate,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_active_user_id),
     db: Client = Depends(get_db),
 ):
     reported_id = str(payload.reported_id)

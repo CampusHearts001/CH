@@ -27,3 +27,13 @@ CORS_ORIGINS: list[str] = _csv(
 
 # A profile is hidden automatically once this many different people report it.
 AUTO_HIDE_REPORTS: int = int(os.environ.get("AUTO_HIDE_REPORTS", "3"))
+
+# Razorpay subscriptions (keep secrets only in backend environment variables).
+RAZORPAY_KEY_ID: str = os.environ.get("RAZORPAY_KEY_ID", "")
+RAZORPAY_KEY_SECRET: str = os.environ.get("RAZORPAY_KEY_SECRET", "")
+RAZORPAY_PLAN_ID: str = os.environ.get("RAZORPAY_PLAN_ID", "")
+RAZORPAY_WEBHOOK_SECRET: str = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
+SUBSCRIPTION_AMOUNT_PAISE: int = 12900
+SUBSCRIPTION_CURRENCY: str = "INR"
+SUBSCRIPTION_PERIOD_DAYS: int = 7
+RAZORPAY_TOTAL_COUNT: int = int(os.environ.get("RAZORPAY_TOTAL_COUNT", "520"))

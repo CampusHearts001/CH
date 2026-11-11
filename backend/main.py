@@ -1,11 +1,12 @@
 """
 CampusMatch - FastAPI application entry point
 """
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import config
-from routers import games, matches, profiles, reports, swipes
+from routers import games, matches, payments, profiles, reports, swipes
 
 app = FastAPI(
     title="CampusMatch API",
@@ -22,6 +23,7 @@ app.add_middleware(
 )
 
 app.include_router(profiles.router)
+app.include_router(payments.router)
 app.include_router(swipes.router)
 app.include_router(matches.router)
 app.include_router(games.router)

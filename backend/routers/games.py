@@ -2,12 +2,13 @@
 CampusMatch - Games router.
 Turn-based Wordle for matched pairs: a low-pressure way to talk before sharing contact details.
 """
+
 import random
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from supabase import Client
 
-from auth import get_current_user_id
+from auth import get_active_user_id
 from database import get_db
 from models import (
     GameCreate,
@@ -55,7 +56,9 @@ def _get_match(db: Client, match_id: str, user_id: str) -> dict:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Match not found.")
     match = res.data[0]
     if user_id not in (str(match["user1_id"]), str(match["user2_id"])):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "You are not part of this match.")
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "You are not part of this match."
+        )
     return match
 
 
@@ -80,12 +83,22 @@ def _public_game(game: dict, user_id: str) -> dict:
 
 
 @router.post("", response_model=GameResponse, status_code=status.HTTP_201_CREATED)
-def create_game(payload: GameCreate, user_id: str = Depends(get_current_user_id), db: Client = Depends(get_db)):
+def create_game(
+    payload: GameCreate,
+    user_id: str = Depends(get_active_user_id),
+    db: Client = Depends(get_db),
+):
     """Start a new game. If one is already running for this match, return that one instead."""
     match_id = str(payload.match_id)
     _get_match(db, match_id, user_id)
 
-    active = db.table("games").select("*").eq("match_id", match_id).eq("status", "active").execute()
+    active = (
+        db.table("games")
+        .select("*")
+        .eq("match_id", match_id)
+        .eq("status", "active")
+        .execute()
+    )
     if active.data:
         return _public_game(active.data[0], user_id)
 
@@ -103,22 +116,38 @@ def create_game(payload: GameCreate, user_id: str = Depends(get_current_user_id)
         .execute()
     )
     if not res.data:
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Failed to create game.")
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, "Failed to create game."
+        )
     return _public_game(res.data[0], user_id)
 
 
 @router.get("/match/{match_id}", response_model=GameResponse)
-def get_match_game(match_id: str, user_id: str = Depends(get_current_user_id), db: Client = Depends(get_db)):
+def get_match_game(
+    match_id: str,
+    user_id: str = Depends(get_active_user_id),
+    db: Client = Depends(get_db),
+):
     """The currently running game for a match (404 if there isn't one)."""
     _get_match(db, match_id, user_id)
-    res = db.table("games").select("*").eq("match_id", match_id).eq("status", "active").execute()
+    res = (
+        db.table("games")
+        .select("*")
+        .eq("match_id", match_id)
+        .eq("status", "active")
+        .execute()
+    )
     if not res.data:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No active game for this match.")
     return _public_game(res.data[0], user_id)
 
 
 @router.get("/{game_id}", response_model=GameResponse)
-def get_game(game_id: str, user_id: str = Depends(get_current_user_id), db: Client = Depends(get_db)):
+def get_game(
+    game_id: str,
+    user_id: str = Depends(get_active_user_id),
+    db: Client = Depends(get_db),
+):
     game, _ = _get_game(db, game_id, user_id)
     return _public_game(game, user_id)
 
@@ -127,7 +156,7 @@ def get_game(game_id: str, user_id: str = Depends(get_current_user_id), db: Clie
 def submit_guess(
     game_id: str,
     payload: GuessSubmit,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_active_user_id),
     db: Client = Depends(get_db),
 ):
     game, match = _get_game(db, game_id, user_id)
@@ -140,26 +169,45 @@ def submit_guess(
     guess = payload.guess
     results = _letter_results(guess, game["word"])
     guesses = (game.get("guesses") or []) + [
-        {"guess": guess, "results": [r.model_dump() for r in results], "player_id": user_id}
+        {
+            "guess": guess,
+            "results": [r.model_dump() for r in results],
+            "player_id": user_id,
+        }
     ]
 
     correct = guess == game["word"]
-    new_status = "won" if correct else ("lost" if len(guesses) >= MAX_GUESSES else "active")
+    new_status = (
+        "won" if correct else ("lost" if len(guesses) >= MAX_GUESSES else "active")
+    )
     winner = user_id if correct else None
-    other = str(match["user2_id"]) if str(match["user1_id"]) == user_id else str(match["user1_id"])
+    other = (
+        str(match["user2_id"])
+        if str(match["user1_id"]) == user_id
+        else str(match["user1_id"])
+    )
     next_turn = other if new_status == "active" else user_id
 
     # Only update if it is still this player's turn (guards against double-clicks / two tabs)
     updated = (
         db.table("games")
-        .update({"guesses": guesses, "current_turn": next_turn, "status": new_status, "winner": winner})
+        .update(
+            {
+                "guesses": guesses,
+                "current_turn": next_turn,
+                "status": new_status,
+                "winner": winner,
+            }
+        )
         .eq("id", game_id)
         .eq("current_turn", user_id)
         .eq("status", "active")
         .execute()
     )
     if not updated.data:
-        raise HTTPException(status.HTTP_409_CONFLICT, "The game changed - please try again.")
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "The game changed - please try again."
+        )
 
     return GuessResponse(
         results=results,
