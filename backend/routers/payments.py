@@ -7,6 +7,7 @@ Never trust a submitted UTR, checkout redirect, or gateway's manual paid flag.
 from __future__ import annotations
 
 import os
+import asyncio
 from urllib.parse import urlparse
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -213,11 +214,13 @@ async def create_order(
 
 
 @router.get("/admin/pending")
-def list_pending(
-    user_id: str = Depends(get_current_user_id), db: Client = Depends(get_db)
+async def list_pending(
+    user_id: str = Depends(get_current_user_id),
+    db: Client = Depends(get_db),
 ):
     _require_admin(user_id)
-    rows = (
+
+    result = (
         db.table("subscriptions")
         .select("user_id,gateway_order_id,updated_at,status")
         .eq("status", "pending")
@@ -225,7 +228,48 @@ def list_pending(
         .limit(100)
         .execute()
     )
-    return {"orders": [row for row in (rows.data or []) if row.get("gateway_order_id")]}
+
+    orders = [row for row in (result.data or []) if row.get("gateway_order_id")]
+    if not orders:
+        return {"orders": []}
+
+    student_ids = list({order["user_id"] for order in orders})
+    profiles_result = (
+        db.table("profiles")
+        .select("id,name,college,avatar_url")
+        .in_("id", student_ids)
+        .execute()
+    )
+    profiles = {profile["id"]: profile for profile in (profiles_result.data or [])}
+
+    # Limit simultaneous gateway requests to avoid overwhelming the gateway.
+    semaphore = asyncio.Semaphore(5)
+
+    async def enrich_order(order: dict) -> dict:
+        profile = profiles.get(order["user_id"], {})
+        order["student_name"] = profile.get("name")
+        order["college"] = profile.get("college")
+        order["avatar_url"] = profile.get("avatar_url")
+
+        # None means unavailable or not submitted; gateway_lookup_error distinguishes them.
+        order["submitted_utr"] = None
+        order["gateway_status"] = None
+        order["gateway_lookup_error"] = False
+
+        try:
+            async with semaphore:
+                gateway_order = await _fetch_order(order["gateway_order_id"])
+            order["gateway_status"] = gateway_order.get("status")
+            # Only a review-status UTR is an unverified student submission.
+            if gateway_order.get("status") == "review":
+                order["submitted_utr"] = gateway_order.get("submitted_utr")
+        except (HTTPException, httpx.HTTPError, ValueError):
+            # Do not lose a pending order just because the gateway is unavailable.
+            order["gateway_lookup_error"] = True
+
+        return order
+
+    return {"orders": await asyncio.gather(*(enrich_order(order) for order in orders))}
 
 
 @router.post("/admin/approve")
@@ -249,8 +293,10 @@ def approve_payment(
                 "p_user_id": payload.user_id,
                 "p_gateway_order_id": payload.gateway_order_id,
                 "p_bank_transaction_ref": payload.bank_transaction_ref.strip(),
+                "p_reviewed_by": user_id,
             },
         ).execute()
+
     except Exception as exc:
         # Avoid leaking database internals or transaction identifiers to the client.
         raise HTTPException(
@@ -262,3 +308,71 @@ def approve_payment(
         "user_id": payload.user_id,
         "current_period_end": result.data,
     }
+
+
+class RejectPayment(BaseModel):
+    user_id: str = Field(min_length=36, max_length=36)
+    gateway_order_id: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=5, max_length=500)
+
+
+@router.post("/admin/reject")
+def reject_payment(
+    payload: RejectPayment,
+    user_id: str = Depends(get_current_user_id),
+    db: Client = Depends(get_db),
+):
+    _require_admin(user_id)
+
+    try:
+        result = db.rpc(
+            "reject_campusmatch_payment",
+            {
+                "p_user_id": payload.user_id,
+                "p_gateway_order_id": payload.gateway_order_id,
+                "p_reason": payload.reason.strip(),
+                "p_reviewed_by": user_id,
+            },
+        ).execute()
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Rejection failed. Check that the order is "
+                "still pending and has not already been reviewed."
+            ),
+        ) from exc
+
+    if result.data is not True:
+        raise HTTPException(
+            status_code=409,
+            detail="Payment rejection was not confirmed.",
+        )
+
+    return {
+        "rejected": True,
+        "gateway_order_id": payload.gateway_order_id,
+        "reason": payload.reason.strip(),
+    }
+
+
+@router.get("/admin/history")
+def payment_history(
+    user_id: str = Depends(get_current_user_id),
+    db: Client = Depends(get_db),
+):
+    _require_admin(user_id)
+
+    result = (
+        db.table("payment_reviews")
+        .select(
+            "id,user_id,gateway_order_id,decision,"
+            "reason,bank_transaction_ref,reviewed_by,reviewed_at"
+        )
+        .order("reviewed_at", desc=True)
+        .limit(100)
+        .execute()
+    )
+
+    return {"reviews": result.data or []}
