@@ -26,3 +26,4 @@ __MACOSX/
 node_modules/
 
 upi-gateway
+/upi-gateway/
