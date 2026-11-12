@@ -24,3 +24,5 @@ __MACOSX/
 
 # Node dependency folders should never be copied into Python builds.
 node_modules/
+
+upi-gateway
