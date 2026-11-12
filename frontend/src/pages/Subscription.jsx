@@ -3,56 +3,46 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import api from '../lib/api'
 
-const CHECKOUT_SCRIPT = 'https://checkout.razorpay.com/v1/checkout.js'
-
-function loadRazorpay() {
-  return new Promise((resolve, reject) => {
-    if (window.Razorpay) return resolve(true)
-    const existing = document.querySelector(`script[src="${CHECKOUT_SCRIPT}"]`)
-    if (existing) {
-      existing.addEventListener('load', () => resolve(true), { once: true })
-      existing.addEventListener('error', () => reject(new Error('Could not load Razorpay Checkout.')), { once: true })
-      return
-    }
-    const script = document.createElement('script')
-    script.src = CHECKOUT_SCRIPT
-    script.async = true
-    script.onload = () => resolve(true)
-    script.onerror = () => reject(new Error('Could not load Razorpay Checkout.'))
-    document.body.appendChild(script)
-  })
-}
-
 export default function Subscription() {
-  const { user, signOut } = useAuth()
+  const { signOut } = useAuth()
   const navigate = useNavigate()
   const [status, setStatus] = useState(null)
   const [loading, setLoading] = useState(true)
   const [paying, setPaying] = useState(false)
-  const [cancelling, setCancelling] = useState(false)
+  const [checking, setChecking] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
   const refreshStatus = useCallback(async () => {
     const { data } = await api.get('/payments/status')
     setStatus(data)
+    if (data.active) navigate('/', { replace: true })
     return data
-  }, [])
+  }, [navigate])
 
   useEffect(() => {
     let alive = true
     async function load() {
       try {
         await api.get('/profiles/me')
+      } catch (err) {
+        if (!alive) return
+        const code = err.response?.status
+        if (code === 404 || err.message?.toLowerCase().includes('profile not found')) {
+          navigate('/setup', { replace: true })
+        } else {
+          setError(err.response?.data?.detail || err.message || 'Could not load your profile.')
+        }
+        setLoading(false)
+        return
+      }
+      try {
         const { data } = await api.get('/payments/status')
         if (!alive) return
         setStatus(data)
         if (data.active) navigate('/', { replace: true })
       } catch (err) {
-        if (!alive) return
-        if (err.message?.toLowerCase().includes('profile not found') || err.message?.includes('404')) {
-          navigate('/setup', { replace: true })
-        } else setError(err.message)
+        if (alive) setError(err.response?.data?.detail || err.message || 'Could not verify membership.')
       } finally {
         if (alive) setLoading(false)
       }
@@ -61,71 +51,36 @@ export default function Subscription() {
     return () => { alive = false }
   }, [navigate])
 
-  const startSubscription = async () => {
+  const startPayment = async () => {
     setError('')
     setNotice('')
     setPaying(true)
     try {
-      await loadRazorpay()
-      const { data } = await api.post('/payments/subscription/create')
-      const checkout = new window.Razorpay({
-        key: data.key_id,
-        subscription_id: data.subscription_id,
-        name: data.name,
-        description: data.description,
-        prefill: { email: user?.email || '' },
-        theme: { color: '#ec4899' },
-        handler: async (response) => {
-          try {
-            const verification = await api.post('/payments/subscription/verify', {
-              razorpay_subscription_id: response.razorpay_subscription_id,
-              razorpay_payment_id: response.razorpay_payment_id,
-              razorpay_signature: response.razorpay_signature,
-            })
-            if (verification.data.active) {
-              await refreshStatus()
-              navigate('/', { replace: true })
-              return
-            }
-            setNotice('Payment signature verified. We are waiting for Razorpay to confirm the captured payment. This page will update shortly.')
-            for (let attempt = 0; attempt < 8; attempt += 1) {
-              await new Promise((resolve) => setTimeout(resolve, 2000))
-              const latest = await refreshStatus()
-              if (latest.active) { navigate('/', { replace: true }); return }
-            }
-          } catch (err) {
-            setError(err.message || 'Payment verification could not be completed.')
-          } finally {
-            setPaying(false)
-          }
-        },
-        modal: {
-          ondismiss: () => setPaying(false),
-        },
-      })
-      checkout.on('payment.failed', (response) => {
-        setError(response.error?.description || 'Payment failed. Please try again.')
-        setPaying(false)
-      })
-      checkout.open()
+      const { data } = await api.post('/payments/order/create')
+      const url = new URL(data.payment_url)
+      if (url.protocol !== 'https:' || url.origin !== 'https://upi-gateway-production-91514c2e.up.railway.app') {
+        throw new Error('Unexpected checkout address. Payment was not opened.')
+      }
+      setNotice('Open checkout to pay, then return to check approval. Do not pay twice.')
+      // Navigation is deliberate: the user can return using the browser Back button.
+      window.location.assign(url.href)
     } catch (err) {
-      setError(err.message || 'Unable to start the subscription.')
+      setError(err.response?.data?.detail || err.message || 'Unable to start payment.')
+    } finally {
       setPaying(false)
     }
   }
 
-  const cancelRenewal = async () => {
-    if (!window.confirm('Cancel automatic renewal? Your paid access will remain until the current period ends.')) return
-    setCancelling(true)
+  const checkMembership = async () => {
+    setChecking(true)
     setError('')
     try {
-      const { data } = await api.post('/payments/subscription/cancel')
-      setNotice(data.message)
-      await refreshStatus()
+      const latest = await refreshStatus()
+      if (!latest.active) setNotice('Your membership is not active yet. Payment must be verified against the bank transaction and approved by the administrator.')
     } catch (err) {
-      setError(err.message)
+      setError(err.response?.data?.detail || err.message || 'Could not check membership.')
     } finally {
-      setCancelling(false)
+      setChecking(false)
     }
   }
 
@@ -143,33 +98,39 @@ export default function Subscription() {
         </div>
 
         {error && <div className="rounded-xl border border-red-500/30 bg-red-500/10 text-red-300 text-sm p-3 mb-4">{error}</div>}
-        {notice && <div className="rounded-xl border border-green-500/30 bg-green-500/10 text-green-300 text-sm p-3 mb-4">{notice}</div>}
+        {notice && <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-200 text-sm p-3 mb-4">{notice}</div>}
 
         <div className="rounded-2xl border border-primary/40 bg-primary/10 p-5 text-center">
-          <p className="text-white/60 text-sm">CampusMatch weekly membership</p>
-          <div className="my-2"><span className="text-4xl font-extrabold text-white">₹129</span><span className="text-white/50"> / week</span></div>
-          <p className="text-white/50 text-xs">₹129 charged now, then ₹129 automatically every 7 days.</p>
+          <p className="text-white/60 text-sm">CampusMatch 7-day membership</p>
+          <div className="my-2"><span className="text-4xl font-extrabold text-white">₹129</span><span className="text-white/50"> / 7 days</span></div>
+          <p className="text-white/50 text-xs">One-time payment. No automatic renewal.</p>
         </div>
 
         <ul className="text-white/70 text-sm space-y-2 my-6">
-          <li>✓ Full access to CampusMatch after successful payment</li>
-          <li>✓ UPI AutoPay mandate authorization through Razorpay</li>
-          <li>✓ Automatic weekly renewal until you cancel</li>
-          <li>✓ Cancel renewal; access continues through the paid period</li>
+          <li>✓ Full CampusMatch access for 7 days after approval</li>
+          <li>✓ Pay through our UPI Gateway</li>
+          <li>✓ Payment verified against bank records before activation</li>
+          <li>✓ Renew manually when your access expires</li>
         </ul>
 
-        <button className="btn-primary w-full" onClick={startSubscription} disabled={paying || status?.cancel_at_period_end}>
-          {paying ? 'Opening secure checkout…' : 'Subscribe with Razorpay · ₹129'}
-        </button>
-        {status?.cancel_at_period_end && <p className="text-amber-300 text-xs text-center mt-3">Automatic renewal is scheduled to stop. You can continue using CampusMatch until your paid period ends.</p>}
-        {status?.current_period_end && <p className="text-white/40 text-xs text-center mt-3">Last paid period ended: {new Date(status.current_period_end).toLocaleString()}</p>}
-        {status?.active && !status?.cancel_at_period_end && (
-          <button className="w-full text-sm text-white/50 hover:text-red-300 mt-4" onClick={cancelRenewal} disabled={cancelling}>
-            {cancelling ? 'Cancelling…' : 'Cancel automatic renewal'}
-          </button>
+        {status?.status === 'pending' && (
+          <p className="text-amber-200 text-xs text-center mb-4">A payment order is pending. Do not pay twice if you have already completed a transfer.</p>
         )}
+
+        <button className="btn-primary w-full" onClick={startPayment} disabled={paying || checking}>
+          {paying ? 'Opening payment page…' : status?.status === 'pending' ? 'Resume existing payment' : 'Pay ₹129 with UPI'}
+        </button>
+
+        <button className="w-full text-sm text-white/80 hover:text-white mt-5" onClick={checkMembership} disabled={checking || paying}>
+          {checking ? 'Checking membership…' : 'I have paid — check membership status'}
+        </button>
+
+        {status?.current_period_end && (
+          <p className="text-white/40 text-xs text-center mt-3">Previous access end: {new Date(status.current_period_end).toLocaleString()}</p>
+        )}
+
         <button className="w-full text-sm text-white/40 hover:text-white mt-5" onClick={signOut}>Sign out</button>
-        <p className="text-[11px] leading-5 text-white/30 text-center mt-5">By subscribing, you authorize recurring UPI AutoPay debits of ₹129 every 7 days. Your bank or UPI app may show the mandate terms before you approve. Payments are processed by Razorpay.</p>
+        <p className="text-[11px] leading-5 text-white/30 text-center mt-5">Payment submission does not automatically activate membership. Access begins after independent bank verification and administrator approval. Never share your UPI PIN or OTP.</p>
       </div>
     </div>
   )
