@@ -107,3 +107,32 @@ def _grant_paid_period(
 
     paid_at = _iso_from_unix(paid_at_unix)
     current = _get_subscription_row(db, user_id)
+
+
+@router.get("/status")
+def get_payment_status(
+    user_id: str = Depends(get_current_user_id),
+    db: Client = Depends(get_db),
+):
+    subscription = _get_subscription_row(db, user_id)
+    now = datetime.now(timezone.utc)
+
+    active = False
+
+    if subscription:
+        period_end = subscription.get("current_period_end")
+
+        if subscription.get("status") == "active" and period_end:
+            end = datetime.fromisoformat(period_end.replace("Z", "+00:00"))
+            active = end > now
+
+    return {
+        "active": active,
+        "status": "active" if active else "inactive",
+        "current_period_end": (
+            subscription.get("current_period_end") if subscription else None
+        ),
+        "cancel_at_period_end": (
+            subscription.get("cancel_at_period_end", False) if subscription else False
+        ),
+    }
